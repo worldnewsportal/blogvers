@@ -1,0 +1,199 @@
+// firestore.rules
+// ==========================================
+// Firestore Security Rules - Production Ready
+// ==========================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==========================================
+    // HELPER FUNCTIONS
+    // ==========================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isAuthor() {
+      return isAuthenticated() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['author', 'admin'];
+    }
+
+    function isValidPost(data) {
+      return data.title is string && data.title.size() >= 5 && data.title.size() <= 200
+        && data.content is string && data.content.size() >= 100
+        && data.status in ['published', 'draft', 'scheduled']
+        && data.authorId == request.auth.uid;
+    }
+
+    function isValidComment(data) {
+      return data.text is string && data.text.size() >= 1 && data.text.size() <= 2000
+        && data.userId == request.auth.uid
+        && data.postId is string;
+    }
+
+    function isValidUser(data) {
+      return data.displayName is string && data.displayName.size() >= 2
+        && data.email is string;
+    }
+
+    function notRateLimited() {
+      // Basic rate limiting - prevent spam
+      return request.time > resource.data.updatedAt + duration.value(1, 's');
+    }
+
+    // ==========================================
+    // USERS
+    // ==========================================
+    match /users/{userId} {
+      allow read: if true; // Public profiles
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if (isOwner(userId) || isAdmin())
+        && isValidUser(request.resource.data)
+        // Protect sensitive fields
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'isVerified', 'isPremium'])
+          || isAdmin());
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    // Username index
+    match /usernames/{username} {
+      allow read: if true;
+      allow create: if isAuthenticated()
+        && request.resource.data.uid == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+
+    // ==========================================
+    // POSTS
+    // ==========================================
+    match /posts/{postId} {
+      // Anyone can read published posts
+      allow read: if resource.data.status == 'published'
+        || (isAuthenticated() && resource.data.authorId == request.auth.uid)
+        || isAdmin();
+
+      // Create: authenticated users with valid post data
+      allow create: if isAuthenticated() && isValidPost(request.resource.data)
+        // Limit fields that can be set on create
+        && !request.resource.data.keys().hasAny(['views', 'score']);
+
+      // Update: only author or admin
+      allow update: if (isAuthenticated() && resource.data.authorId == request.auth.uid && isValidPost(request.resource.data))
+        || isAdmin()
+        // Allow view/like/comment count updates from any authenticated user
+        || (isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['views', 'likes', 'comments', 'bookmarks', 'shares', 'score']));
+
+      allow delete: if (isAuthenticated() && resource.data.authorId == request.auth.uid)
+        || isAdmin();
+    }
+
+    // ==========================================
+    // COMMENTS
+    // ==========================================
+    match /comments/{commentId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && isValidComment(request.resource.data);
+      allow update: if (isAuthenticated() && resource.data.userId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'isEdited', 'updatedAt']))
+        || isAdmin();
+      allow delete: if (isAuthenticated() && resource.data.userId == request.auth.uid)
+        || isAdmin();
+    }
+
+    // ==========================================
+    // LIKES
+    // ==========================================
+    match /likes/{likeId} {
+      allow read: if true;
+      allow create: if isAuthenticated()
+        && request.auth.uid == request.resource.data.userId
+        && likeId == request.auth.uid + '_' + request.resource.data.postId;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    // ==========================================
+    // BOOKMARKS
+    // ==========================================
+    match /bookmarks/{bookmarkId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated()
+        && request.auth.uid == request.resource.data.userId;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    // ==========================================
+    // FOLLOWS
+    // ==========================================
+    match /follows/{followId} {
+      allow read: if true;
+      allow create: if isAuthenticated()
+        && request.auth.uid == request.resource.data.followerId
+        && request.resource.data.followerId != request.resource.data.followingId;
+      allow delete: if isAuthenticated() && resource.data.followerId == request.auth.uid;
+    }
+
+    // ==========================================
+    // NOTIFICATIONS
+    // ==========================================
+    match /notifications/{notifId} {
+      allow read: if isAuthenticated() && resource.data.recipientId == request.auth.uid;
+      allow update: if isAuthenticated() && resource.data.recipientId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+      allow create, delete: if isAdmin();
+    }
+
+    // ==========================================
+    // CATEGORIES (Admin only write)
+    // ==========================================
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ==========================================
+    // REPORTS
+    // ==========================================
+    match /reports/{reportId} {
+      allow create: if isAuthenticated();
+      allow read, update, delete: if isAdmin();
+    }
+
+    // ==========================================
+    // ANALYTICS (Read-only for users)
+    // ==========================================
+    match /analytics/{docId} {
+      allow read: if isAdmin();
+      allow write: if false; // Cloud Functions only
+    }
+
+    // ==========================================
+    // SERIES
+    // ==========================================
+    match /series/{seriesId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated()
+        && request.resource.data.authorId == request.auth.uid;
+      allow delete: if (isAuthenticated() && resource.data.authorId == request.auth.uid)
+        || isAdmin();
+    }
+
+    // ==========================================
+    // DRAFTS
+    // ==========================================
+    match /drafts/{draftId} {
+      allow read, write: if isAuthenticated()
+        && (resource == null || resource.data.authorId == request.auth.uid);
+    }
+  }
+}

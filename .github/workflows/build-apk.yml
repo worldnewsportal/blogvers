@@ -1,0 +1,196 @@
+name: 🚀 Build & Deploy BlogVerse APK
+
+on:
+  push:
+    branches:
+      - main
+      - release
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - preview
+          - production
+          - production-apk
+
+jobs:
+  # ==============================
+  # JOB 1: Code Quality Check
+  # ==============================
+  quality:
+    name: 🔍 Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 📋 Install dependencies
+        run: npm ci
+
+      - name: 🧹 Run ESLint
+        run: npm run lint --if-present
+
+      - name: 🧪 Run Tests
+        run: npm test --if-present -- --passWithNoTests
+
+  # ==============================
+  # JOB 2: Build Android APK
+  # ==============================
+  build-android:
+    name: 🤖 Build Android APK
+    runs-on: ubuntu-latest
+    needs: quality
+    environment: production
+    
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 🔧 Setup Expo & EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          expo-version: latest
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 📋 Install project dependencies
+        run: npm ci
+
+      - name: 🔑 Create google-services.json
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > google-services.json
+
+      - name: 🔐 Create .env file
+        run: |
+          cat > .env << EOF
+          FIREBASE_API_KEY=${{ secrets.FIREBASE_API_KEY }}
+          FIREBASE_AUTH_DOMAIN=${{ secrets.FIREBASE_AUTH_DOMAIN }}
+          FIREBASE_PROJECT_ID=${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_STORAGE_BUCKET=${{ secrets.FIREBASE_STORAGE_BUCKET }}
+          FIREBASE_MESSAGING_SENDER_ID=${{ secrets.FIREBASE_MESSAGING_SENDER_ID }}
+          FIREBASE_APP_ID=${{ secrets.FIREBASE_APP_ID }}
+          UNITY_GAME_ID_ANDROID=${{ secrets.UNITY_GAME_ID_ANDROID }}
+          UNITY_GAME_ID_IOS=${{ secrets.UNITY_GAME_ID_IOS }}
+          UNITY_BANNER_PLACEMENT=${{ secrets.UNITY_BANNER_PLACEMENT }}
+          UNITY_INTERSTITIAL_PLACEMENT=${{ secrets.UNITY_INTERSTITIAL_PLACEMENT }}
+          UNITY_REWARDED_PLACEMENT=${{ secrets.UNITY_REWARDED_PLACEMENT }}
+          UNITY_REWARDED_INTERSTITIAL_PLACEMENT=${{ secrets.UNITY_REWARDED_INTERSTITIAL_PLACEMENT }}
+          EOF
+
+      - name: 🏗️ Build Preview APK (for testing)
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+        run: eas build --platform android --profile preview --non-interactive --no-wait
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 🚀 Build Production APK
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.build_type == 'production-apk'
+        run: eas build --platform android --profile production-apk --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 📤 Download APK artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          BUILD_URL=$(eas build:list --platform android --status finished --limit 1 --json | jq -r '.[0].artifacts.buildUrl')
+          curl -L -o blogverse-release.apk "$BUILD_URL"
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 📦 Upload APK as GitHub artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlogVerse-APK-${{ github.ref_name }}
+          path: blogverse-release.apk
+          retention-days: 30
+
+  # ==============================
+  # JOB 3: Create GitHub Release
+  # ==============================
+  release:
+    name: 🎉 Create Release
+    runs-on: ubuntu-latest
+    needs: build-android
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: ⬇️ Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: BlogVerse-APK-${{ github.ref_name }}
+
+      - name: 📝 Generate Release Notes
+        id: release_notes
+        run: |
+          echo "## 🚀 BlogVerse ${{ github.ref_name }}" > RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "### ✨ What's New" >> RELEASE_NOTES.md
+          git log --pretty=format:"- %s" $(git describe --tags --abbrev=0 HEAD^)..HEAD >> RELEASE_NOTES.md || echo "- Initial release" >> RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "### 📱 Installation" >> RELEASE_NOTES.md
+          echo "1. Download the APK file below" >> RELEASE_NOTES.md
+          echo "2. Enable 'Install from unknown sources' in your Android settings" >> RELEASE_NOTES.md
+          echo "3. Install the APK file" >> RELEASE_NOTES.md
+          echo "4. Open BlogVerse and enjoy! 🎉" >> RELEASE_NOTES.md
+
+      - name: 🎉 Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_NOTES.md
+          files: blogverse-release.apk
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ==============================
+  # JOB 4: Deploy to Play Store (Optional)
+  # ==============================
+  deploy-playstore:
+    name: 🏪 Deploy to Play Store
+    runs-on: ubuntu-latest
+    needs: build-android
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'beta')
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔧 Setup EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 🔑 Create service account key
+        run: echo '${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}' > google-play-service-account.json
+
+      - name: 📤 Submit to Play Store (Internal Track)
+        run: eas submit --platform android --profile production --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}

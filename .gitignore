@@ -1,0 +1,59 @@
+# Expo / React Native
+node_modules/
+.expo/
+dist/
+web-build/
+.expo-shared/
+
+# Native builds
+android/
+ios/
+*.apk
+*.ipa
+*.aab
+
+# Environment files - NEVER commit these!
+.env
+.env.local
+.env.production
+.env.development
+*.env
+
+# Firebase - NEVER commit!
+google-services.json
+google-play-service-account.json
+GoogleService-Info.plist
+firebase-adminsdk*.json
+
+# Secrets
+*.key
+*.p8
+*.p12
+*.pem
+*.mobileprovision
+
+# Logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+*.log
+
+# macOS
+.DS_Store
+*.pem
+.AppleDouble
+.LSOverride
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+coverage/
+__snapshots__/
+
+# Temp
+.tmp/
+tmp/
