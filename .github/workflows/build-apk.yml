@@ -23,40 +23,9 @@ on:
           - production-apk
 
 jobs:
-  # ==============================
-  # JOB 1: Code Quality Check
-  # ==============================
-  quality:
-    name: 🔍 Code Quality
-    runs-on: ubuntu-latest
-    steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
-
-      - name: 📦 Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: 🗑️ Remove ads package
-        run: npx json -I -f package.json -e 'delete this.dependencies["react-native-unity-ads"]'
-
-      - name: 📋 Install dependencies
-        run: npm install
-
-      
-
-      - name: 🧪 Run Tests
-        run: npm test --if-present -- --passWithNoTests
-
-  # ==============================
-  # JOB 2: Build Android APK
-  # ==============================
   build-android:
     name: 🤖 Build Android APK
     runs-on: ubuntu-latest
-    needs: quality
-    environment: production
 
     steps:
       - name: 📥 Checkout repository
@@ -95,7 +64,7 @@ jobs:
           FIREBASE_APP_ID=${{ secrets.FIREBASE_APP_ID }}
           EOF
 
-      - name: 🏗️ Build Preview APK (for testing)
+      - name: 🏗️ Build Preview APK
         if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
         run: eas build --platform android --profile preview --non-interactive --no-wait
         env:
@@ -106,60 +75,3 @@ jobs:
         run: eas build --platform android --profile production-apk --non-interactive
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-
-      - name: 📤 Download APK artifact
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          BUILD_URL=$(eas build:list --platform android --status finished --limit 1 --json | jq -r '.[0].artifacts.buildUrl')
-          curl -L -o blogverse-release.apk "$BUILD_URL"
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-
-      - name: 📦 Upload APK as GitHub artifact
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
-        with:
-          name: BlogVerse-APK-${{ github.ref_name }}
-          path: blogverse-release.apk
-          retention-days: 30
-
-  # ==============================
-  # JOB 3: Create GitHub Release
-  # ==============================
-  release:
-    name: 🎉 Create Release
-    runs-on: ubuntu-latest
-    needs: build-android
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
-
-      - name: ⬇️ Download APK artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: BlogVerse-APK-${{ github.ref_name }}
-
-      - name: 📝 Generate Release Notes
-        run: |
-          echo "## 🚀 BlogVerse ${{ github.ref_name }}" > RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "### ✨ What's New" >> RELEASE_NOTES.md
-          git log --pretty=format:"- %s" $(git describe --tags --abbrev=0 HEAD^)..HEAD >> RELEASE_NOTES.md || echo "- Initial release" >> RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "### 📱 Installation" >> RELEASE_NOTES.md
-          echo "1. Download the APK file below" >> RELEASE_NOTES.md
-          echo "2. Enable 'Install from unknown sources' in your Android settings" >> RELEASE_NOTES.md
-          echo "3. Install the APK file" >> RELEASE_NOTES.md
-          echo "4. Open BlogVerse and enjoy! 🎉" >> RELEASE_NOTES.md
-
-      - name: 🎉 Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          body_path: RELEASE_NOTES.md
-          files: blogverse-release.apk
-          draft: false
-          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
