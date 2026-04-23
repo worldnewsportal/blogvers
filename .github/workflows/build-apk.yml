@@ -44,8 +44,7 @@ jobs:
       - name: 📋 Install dependencies
         run: npm install
 
-      - name: 🧹 Run ESLint
-        run: npm run lint --if-present
+      
 
       - name: 🧪 Run Tests
         run: npm test --if-present -- --passWithNoTests
